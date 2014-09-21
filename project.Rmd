@@ -1,0 +1,209 @@
+---
+title: "Practical Machine Learning Project"
+output: html_document
+---
+
+## Executive Summary
+In this project, the goal was be to use data from accelerometers on the belt, forearm, arm, and dumbell to predict in which of 5 ways participants did an exercise. 
+
+Information about the data used is available from the website here: http://groupware.les.inf.puc-rio.br/har (see the section on the Weight Lifting Exercise Dataset). 
+
+### Pre-Processing of the Data
+The original data had a large number of NAs, blanks, and some #DIV/0!.  For the purpose of training a machine learning classifier a value of 1 was assigned to blanks, 2 to NAs, and 3 to #DIV/0!.  The data was then processed so as to remove columns that were zero or near zero or with no variance.  Also, the first 8 columns of the original data were not used (even though they could have been useful in predicting what excercise was being performed) so as to make the classification algorithm more generic (that is to say, not dependent on who is being measured for the purpose of making the prediction).  Finally, because of some of the columns contained values that were much larger than those of other columns, feature normalization was performed.
+
+The data was then divided into a training set containing 60% of the data and a validation set containing 40% of the data.
+
+### Machine Learning
+Random Forest was tried but discarded because it took too long to train and did not perform as well as the final method used with the chosen features (I was able to get at most low sixty percent accuracy after waiting longer that one hour for the training with Random Forests).  Instead a (faster, simpler to understand, and simple to implement) logistic regression algorithm was used as taught by Andrew Ng in the excellent Coursera Machine Learning course.  More specifically, 5 logistic regresion classifiers were trained (one for each way of performing the excercise) and the "one vs all" technique for choosing the best prediction was used.
+
+The algorithm had a 26.83% out of sample error (1-accuracy on the validation set) with the features chosen as can be seen below.
+
+```{r, echo=FALSE, cache=TRUE}
+featureNormalize <- function(X){
+
+    mu <- apply(X,2,mean)
+    sigma <- apply(X, 2, sd)
+    m<-dim(X)[1]
+
+    numerator <- X-matrix(data=rep(mu, m), nrow=m, byrow=TRUE)
+    denominator <- matrix(data=rep(sigma, m), nrow=m, byrow=TRUE)
+
+    X_norm<- numerator / denominator
+
+    list(X_norm, mu, sigma)
+}
+
+featureNormalize2 <- function(X, mu, sigma){
+
+    m<-dim(X)[1]
+
+    numerator <- X-matrix(data=rep(mu, m), nrow=m, byrow=TRUE)
+    denominator <- matrix(data=rep(sigma, m), nrow=m, byrow=TRUE)
+
+    X_norm<- numerator / denominator
+
+    X_norm
+}
+
+sigmoid<-function(z){
+   g <- 1 / (1+exp(-z))
+   g
+}
+
+lrCostFunctionFunc <- function(theta, X, y, lambda){
+
+    theta <- as.matrix(theta)
+    X <- as.matrix(X)
+    y <- as.vector(y)
+
+    m <- length(y)
+
+    J <- 0
+
+    tmp <- 1/m*(-(t(y)%*%log(sigmoid(X %*% theta)))-t(1-y)%*%log(1-sigmoid(X %*% theta)))
+    J <- tmp + (lambda/(2*m))*(t(theta[2:length(theta)]) %*% theta[2:length(theta)] )
+
+    J
+}
+
+lrCostFunctionGrad <- function(theta, X, y, lambda){
+    theta <- as.matrix(theta)
+    X <- as.matrix(X)
+    y <- as.vector(y)
+
+    m <- length(y)
+
+    grad <- matrix(rep(0, dim(theta)[1]*dim(theta)[2]), nrow=dim(theta)[1], ncol=dim(theta)[2])
+
+    gradient_a <- 1/m*(t(sigmoid(X%*%theta)-y)%*%X)
+    gradient_b <- (lambda/m)*theta
+    gradient_b[1]<-0
+    grad <- gradient_a + t(gradient_b)
+
+    grad <- as.vector(t(grad))
+
+    grad
+}
+
+oneVsAll <- function (X, y, num_labels, lambda){
+
+    m <- dim(X)[1]
+    n <- dim(X)[2]
+
+    all_theta <- matrix(data=rep(0, num_labels*(n+1)), nrow=num_labels, ncol=n+1)
+
+    X<-cbind(matrix(data=rep(1,m), nrow=m, ncol=1), X)
+
+    for(i in 1:num_labels){
+        initial_theta <- matrix(rep(0,n+1), nrow=n+1, ncol=1)
+
+        func <-function(t) lrCostFunctionFunc(t, X, as.numeric(y==i), lambda)
+        grad <-function(t) lrCostFunctionGrad(t, X, as.numeric(y==i), lambda)
+
+        # c("Nelder-Mead", "BFGS", "CG")
+        #
+
+        theta <- optim(par=initial_theta, fn=func, gr=grad, method="BFGS")$par
+        #theta <- optim(par=initial_theta, fn=func, gr = grad,
+        #    method = c("Nelder-Mead"),
+        #    lower = -Inf, upper = Inf,
+        #    control = list(), hessian = T)$par
+
+        all_theta[i,]<-as.vector(t(theta))
+     }
+   all_theta
+}
+
+predictOneVsAll<-function(all_theta, X){
+    all_theta <- as.matrix(all_theta)
+    X <- as.matrix(X)
+
+
+    m <- dim(X)[1]
+    num_labels = dim(all_theta)[1]
+
+    p <- matrix(rep(0, m), nrow=m, ncol=1)
+
+    X<- cbind(matrix(rep(1,m), nrow=m, ncol=1), X)
+
+    res<-X%*%t(all_theta)
+    #print(head(res, n=20L))
+    m<- dim(res)[1]
+    n<- dim(res)[2]
+
+    p<-NULL
+    for(i in 1:m){
+       tmpMax= -Inf
+       tmpMaxj = 0
+       for(j in 1:n){
+          if(res[i,j]> tmpMax){
+             tmpMax = res[i,j]
+             tmpMaxj = j
+          }
+       }
+       p[i]=tmpMaxj
+    }
+
+    p
+
+}
+
+
+    library(caret)
+    set.seed(777)
+
+    num_labels <- 5;
+    #print("Loading and Cleaning data")
+
+    t<-read.csv("pml-training.csv", as.is=TRUE)
+    t[t==""]<- 1
+    t[is.na(t)]<- 2
+    t[t=="#DIV/0!"]<- 3
+
+    actualPredictValue<-dim(t)[2]
+
+    x<-t[,9:actualPredictValue-1]
+
+    # Remmove the Near Zero Values
+    nearZero <- nearZeroVar(x, saveMetrics=TRUE)
+    x<-x[,-which(nearZero$nzv==TRUE)]
+
+
+    x[]<-lapply(x, as.numeric)
+
+    y<-t[,actualPredictValue]
+    y<-as.factor(y)
+    y<-as.numeric(y)
+
+    inTrain <- createDataPartition(y, p=0.60, list=FALSE)
+    xtraining<-x[inTrain,]
+    ytraining<-y[inTrain]
+    xtesting<-x[-inTrain,]
+    ytesting<-y[-inTrain]
+
+    #print("Feature Scaling")
+
+    retval<-featureNormalize(xtraining)
+
+    X<-retval[1][[1]]
+    mu<-retval[2][[1]]
+    sigma<-retval[3][[1]]
+
+    #print("Training One-vs-All Logistic Regression...")
+    lambda <- 0.1
+    all_theta <- oneVsAll(X, ytraining, num_labels, lambda);
+
+    pred <- predictOneVsAll(all_theta, X);
+
+    #print(confusionMatrix(pred, ytraining))
+
+    X2<-featureNormalize2(xtesting, mu, sigma)
+    pred <- predictOneVsAll(all_theta, X2);
+
+    #print("Cross Validation Set Accuracy: ")
+    print(confusionMatrix(pred, ytesting))
+```
+
+## Conclusion
+Even though Random Forest is supposed to be a strong machine learning algorithm, I was able to get better accuracy and performance from a Logistic Regression Algorithm for a chosen set of features.
+
